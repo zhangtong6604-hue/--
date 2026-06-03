@@ -238,7 +238,7 @@
 
         wls.forEach((wl, index) => {
             const data = datasets[wl];
-            if (data.length === 0) return; // 如果该波长没有数据，则跳过
+            if (data.length === 0) return; // 如果波长没有数据，则跳过
             exportCount++;
             
             // 使用 setTimeout 错开下载时间，防止浏览器阻断

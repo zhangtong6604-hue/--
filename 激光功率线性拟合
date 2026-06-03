@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>激光标定工程台 (独立导出版)</title>
+    <style>
+        :root {
+            --bg-color: #F5F5F7;
+            --card-bg: #FFFFFF;
+            --text-main: #1D1D1F;
+            --text-secondary: #86868B;
+            --accent: #0071E3;
+            --accent-hover: #0077ED;
+            --success: #34C759;
+            --warning: #FF9500;
+            --danger: #FF3B30;
+            --border-radius: 12px;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 30px 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .container { width: 100%; max-width: 700px; }
+        .header-bar {
+            display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;
+        }
+        h1 { font-size: 22px; margin: 0; }
+        .export-btn {
+            background: var(--card-bg); color: var(--text-main); border: 1px solid #D1D1D6;
+            padding: 8px 16px; border-radius: 8px; font-size: 13px; cursor: pointer; transition: 0.2s;
+        }
+        .export-btn:hover { background: #E5E5EA; }
+        
+        .tabs { display: flex; background: #E3E3E8; border-radius: 10px; padding: 4px; margin-bottom: 20px; }
+        .tab {
+            flex: 1; text-align: center; padding: 8px 0; font-size: 14px; font-weight: 500;
+            color: var(--text-secondary); cursor: pointer; border-radius: 6px; transition: 0.2s;
+        }
+        .tab.active { background: var(--card-bg); color: var(--text-main); box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+        
+        .card { background: var(--card-bg); border-radius: var(--border-radius); padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.04); margin-bottom: 20px; }
+        
+        .input-row { display: flex; gap: 12px; margin-bottom: 16px; align-items: flex-end; }
+        .input-field { flex: 1; display: flex; flex-direction: column; }
+        label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; font-weight: 500; }
+        input { background: var(--bg-color); border: 1px solid transparent; border-radius: 8px; padding: 10px; font-size: 14px; outline: none; box-sizing: border-box; }
+        input:focus { border-color: var(--accent); background: var(--card-bg); }
+        .main-btn {
+            background: var(--accent); color: white; border: none; border-radius: 8px; padding: 10px 20px;
+            font-size: 14px; font-weight: 600; cursor: pointer; height: 40px; min-width: 100px;
+        }
+        .main-btn.edit-mode { background: var(--warning); }
+        
+        /* 拟合结果区 */
+        .fit-result { background: #F5F5F7; border-radius: 8px; padding: 16px; margin-top: 16px; font-family: monospace; font-size: 13px; line-height: 1.6; }
+        .r2-good { color: var(--success); font-weight: bold; }
+        
+        /* 数据表格 */
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px; }
+        th, td { text-align: left; padding: 10px; border-bottom: 1px solid #F0F0F0; }
+        th { color: var(--text-secondary); font-weight: 500; }
+        .action-link { cursor: pointer; font-weight: 500; margin-right: 12px; }
+        .edit-link { color: var(--accent); }
+        .del-link { color: var(--danger); }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header-bar">
+        <h1>多波长标定系统</h1>
+        <button class="export-btn" onclick="exportCSV()">⬇ 导出全部数据 (CSV)</button>
+    </div>
+    
+    <div class="tabs" id="wavelengthTabs">
+        <div class="tab active" data-wl="532">532 nm</div>
+        <div class="tab" data-wl="633">633 nm</div>
+        <div class="tab" data-wl="785">785 nm</div>
+    </div>
+
+    <div class="card">
+        <div class="input-row">
+            <div class="input-field">
+                <label>角度 (°)</label>
+                <input type="number" id="xInput" step="0.1" placeholder="输入角度">
+            </div>
+            <div class="input-field">
+                <label>实测功率 (mW)</label>
+                <input type="number" id="yInput" step="0.01" placeholder="输入功率">
+            </div>
+            <button id="submitBtn" class="main-btn" onclick="submitData()">录入数据</button>
+            <button id="cancelBtn" class="main-btn" style="background:#86868B; display:none;" onclick="cancelEdit()">取消</button>
+        </div>
+        
+        <div class="fit-result" id="fitResultBox">
+            录入 2 组以上数据自动计算拟合方程...
+        </div>
+
+        <table id="dataTable">
+            <thead>
+                <tr>
+                    <th width="20%">序号</th>
+                    <th width="30%">角度 (X)</th>
+                    <th width="30%">功率 (Y)</th>
+                    <th width="20%">操作</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+                </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    // === 核心数据结构与本地存储逻辑 ===
+    const STORAGE_KEY = 'laser_calibration_data';
+    let datasets = { "532": [], "633": [], "785": [] };
+    let currentWL = "532";
+    let editingId = null;
+
+    // 初始化加载数据
+    function initData() {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+            datasets = JSON.parse(saved);
+        }
+        renderUI();
+    }
+
+    function saveDataLocally() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(datasets));
+    }
+
+    // === UI 交互逻辑 ===
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', (e) => {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            e.target.classList.add('active');
+            currentWL = e.target.dataset.wl;
+            cancelEdit();
+            renderUI();
+        });
+    });
+
+    function submitData() {
+        const xVal = parseFloat(document.getElementById('xInput').value);
+        const yVal = parseFloat(document.getElementById('yInput').value);
+
+        if (isNaN(xVal) || isNaN(yVal)) {
+            alert("请输入有效数值！");
+            return;
+        }
+
+        if (editingId !== null) {
+            const index = datasets[currentWL].findIndex(item => item.id === editingId);
+            if (index !== -1) {
+                datasets[currentWL][index].x = xVal;
+                datasets[currentWL][index].y = yVal;
+            }
+            cancelEdit();
+        } else {
+            datasets[currentWL].push({ id: Date.now(), x: xVal, y: yVal });
+            datasets[currentWL].sort((a, b) => a.x - b.x);
+        }
+
+        saveDataLocally();
+        document.getElementById('xInput').value = '';
+        document.getElementById('yInput').value = '';
+        document.getElementById('xInput').focus();
+        
+        renderUI();
+    }
+
+    function editData(id) {
+        const item = datasets[currentWL].find(d => d.id === id);
+        if (!item) return;
+        document.getElementById('xInput').value = item.x;
+        document.getElementById('yInput').value = item.y;
+        editingId = id;
+        const btn = document.getElementById('submitBtn');
+        btn.innerText = "确认修改";
+        btn.classList.add('edit-mode');
+        document.getElementById('cancelBtn').style.display = 'block';
+    }
+
+    function cancelEdit() {
+        editingId = null;
+        document.getElementById('xInput').value = '';
+        document.getElementById('yInput').value = '';
+        const btn = document.getElementById('submitBtn');
+        btn.innerText = "录入数据";
+        btn.classList.remove('edit-mode');
+        document.getElementById('cancelBtn').style.display = 'none';
+    }
+
+    function deleteData(id) {
+        if(confirm("确定要删除这条数据吗？")) {
+            datasets[currentWL] = datasets[currentWL].filter(d => d.id !== id);
+            if(editingId === id) cancelEdit();
+            saveDataLocally();
+            renderUI();
+        }
+    }
+
+    function renderUI() {
+        const tbody = document.getElementById('tableBody');
+        tbody.innerHTML = '';
+        const currentData = datasets[currentWL];
+
+        currentData.forEach((item, index) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${index + 1}</td>
+                <td>${item.x}</td>
+                <td>${item.y}</td>
+                <td>
+                    <span class="action-link edit-link" onclick="editData(${item.id})">修改</span>
+                    <span class="action-link del-link" onclick="deleteData(${item.id})">删除</span>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        calculateAndShowFit(currentData);
+    }
+
+    // === CSV 独立导出功能 ===
+    function exportCSV() {
+        const wls = ["532", "633", "785"];
+        const dateStr = new Date().toISOString().slice(0, 10);
+        let exportCount = 0;
+
+        wls.forEach((wl, index) => {
+            const data = datasets[wl];
+            if (data.length === 0) return; // 如果该波长没有数据，则跳过
+            exportCount++;
+            
+            // 使用 setTimeout 错开下载时间，防止浏览器阻断
+            setTimeout(() => {
+                let csvContent = "\uFEFF波长(nm),角度(°),实测功率(mW)\n";
+                data.forEach(item => {
+                    csvContent += `${wl},${item.x},${item.y}\n`;
+                });
+
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+                link.setAttribute("download", `标定_${wl}nm_${dateStr}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }, index * 300); // 每个文件间隔 300 毫秒
+        });
+
+        if(exportCount === 0) {
+            alert("目前没有可导出的数据。");
+        }
+    }
+
+    // === 核心数学计算 ===
+    function solveLinearSystem(A, B) {
+        let n = A.length;
+        for (let i = 0; i < n; i++) {
+            let maxEl = Math.abs(A[i][i]), maxRow = i;
+            for (let k = i + 1; k < n; k++) if (Math.abs(A[k][i]) > maxEl) { maxEl = Math.abs(A[k][i]); maxRow = k; }
+            for (let k = i; k < n; k++) { let tmp = A[maxRow][k]; A[maxRow][k] = A[i][k]; A[i][k] = tmp; }
+            let tmpB = B[maxRow]; B[maxRow] = B[i]; B[i] = tmpB;
+            if (A[i][i] === 0) return null;
+            for (let k = i + 1; k < n; k++) {
+                let c = -A[k][i] / A[i][i];
+                for (let j = i; j < n; j++) { if (i === j) A[k][j] = 0; else A[k][j] += c * A[i][j]; }
+                B[k] += c * B[i];
+            }
+        }
+        let x = new Array(n).fill(0);
+        for (let i = n - 1; i >= 0; i--) {
+            x[i] = B[i] / A[i][i];
+            for (let k = i - 1; k >= 0; k--) B[k] -= A[k][i] * x[i];
+        }
+        return x;
+    }
+
+    function calcR2(yArr, yPred) {
+        let meanY = yArr.reduce((a, b) => a + b, 0) / yArr.length;
+        let ssTot = 0, ssRes = 0;
+        for (let i = 0; i < yArr.length; i++) {
+            ssTot += Math.pow(yArr[i] - meanY, 2);
+            ssRes += Math.pow(yArr[i] - yPred[i], 2);
+        }
+        return ssTot === 0 ? 1.0 : 1 - (ssRes / ssTot);
+    }
+
+    function calculateAndShowFit(data) {
+        const box = document.getElementById('fitResultBox');
+        if (data.length < 2) { box.innerHTML = "录入 2 组以上数据自动计算拟合方程..."; return; }
+        
+        let x = data.map(d => d.x); let y = data.map(d => d.y);
+        if (x.every(val => val === x[0])) { box.innerHTML = "<span style='color:red'>所有角度相同，无法拟合</span>"; return; }
+
+        let html = "";
+        
+        // 1. 线性拟合 (全部保留2位小数)
+        let n = x.length, sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+        for (let i = 0; i < n; i++) { sumX += x[i]; sumY += y[i]; sumXY += x[i]*y[i]; sumXX += x[i]*x[i]; }
+        let k = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+        let b = (sumY - k * sumX) / n;
+        let linR2 = calcR2(y, x.map(v => k*v + b));
+        let r2Class = linR2 > 0.95 ? 'r2-good' : '';
+        html += `【一阶线性】 y = ${k.toFixed(2)}x ${b>=0?'+':'-'} ${Math.abs(b).toFixed(2)} | R² = <span class="${r2Class}">${linR2.toFixed(4)}</span><br>`;
+
+        // 2. 三次多项式拟合 (全部保留2位小数)
+        if (data.length >= 4) {
+            let X = [[0,0,0,0], [0,0,0,0], [0,0,0,0], [0,0,0,0]], Y = [0,0,0,0];
+            for (let i = 0; i < n; i++) {
+                let xp = [1, x[i], x[i]*x[i], Math.pow(x[i],3), Math.pow(x[i],4), Math.pow(x[i],5), Math.pow(x[i],6)];
+                for (let r = 0; r < 4; r++) {
+                    Y[r] += y[i] * xp[r];
+                    for (let c = 0; c < 4; c++) X[r][c] += xp[r+c];
+                }
+            }
+            let coeffs = solveLinearSystem(X, Y);
+            if (coeffs) {
+                let d = coeffs[0], c = coeffs[1], b2 = coeffs[2], a = coeffs[3];
+                let cubR2 = calcR2(y, x.map(v => a*Math.pow(v,3) + b2*Math.pow(v,2) + c*v + d));
+                let r2Class2 = cubR2 > 0.95 ? 'r2-good' : '';
+                html += `【三次多项】 y = ${a.toFixed(2)}x³ ${b2>=0?'+':'-'} ${Math.abs(b2).toFixed(2)}x² ${c>=0?'+':'-'} ${Math.abs(c).toFixed(2)}x ${d>=0?'+':'-'} ${Math.abs(d).toFixed(2)} | R² = <span class="${r2Class2}">${cubR2.toFixed(4)}</span>`;
+            } else {
+                html += `【三次多项】 矩阵奇异，计算失败`;
+            }
+        } else {
+            html += `【三次多项】 需至少 4 组数据激活`;
+        }
+
+        box.innerHTML = html;
+    }
+
+    // 页面加载完成后初始化
+    window.onload = initData;
+
+</script>
+</body>
+</html>
